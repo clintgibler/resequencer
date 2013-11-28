@@ -65,7 +65,7 @@ import dalvik.system.DexFile;
 @TargetApi(5)
 public class Monolith {
 	protected static final boolean DEBUG = true;
-	protected static final int DUMP_STACK = 2; // how far back should we dump
+	protected static final int DUMP_STACK = 5; // how far back should we dump
 												// stacks on log calls?
 	protected static FileOutputStream MethodTraceFOS = null;
 
@@ -76,7 +76,11 @@ public class Monolith {
 	protected static final String MyAppName = "%!AppPackage%";
 	protected static final String MyAppVersionName = "%!AppVersionName%";
 	protected static final String MyAppVersionCode = "%!AppVersionCode%";
-
+	
+	protected static final Object COVERAGE_LOCK = new Object();
+	protected static final Object COMPARISON_LOCK = new Object();
+	protected static final Object ENVIRONMENT_LOCK = new Object();
+	
 	// myCheckSigsBehavior
 	// 0 - always return true if one package is app
 	// 1 - be safe and only say package signatures match when the other
@@ -912,6 +916,10 @@ public class Monolith {
 		// will have its context stored, which is what we want
 		if ( AppContext == null ) {
 			AppContext = c;
+			// Log the emulator environment. In this location should only be run once.
+			logmt(ENVIRONMENT_LOCK, "environment.json", LogPhoneEnvironment.getEnvironmentJson(AppContext), false);
+			// TODO Passing objects to methods with wrong types
+			//			passing a register with a String reference to a method that expects an Object
 		}
 	}
 
@@ -961,19 +969,74 @@ public class Monolith {
 	}
 
 	public static void logmt(Object o) {
+		logmt(COVERAGE_LOCK, "mt.log", String.valueOf(o));
+	}
+	
+	/**
+	 * TODO: Think of a better way to log things of interest than having a 
+	 * 		 separate method for each file to write. 
+	 * 
+	 * 		 The problem is that if you call a method in smali in which one of the args
+	 * 		 is the file to write to, you end up needing another register to store the 
+	 * 		 name of the file. This is easy if it's at the beginning of the method but in 
+	 * 		 the middle you have to worry about stomping on registers being used for other 
+	 * 		 purposes. By not passing in the method (i.e. having a method for each file being 
+	 * 		 written to) we solve the problem of needing another register in the smali. 
+	 * @param x one of the objects being compared
+	 * @param y the other
+	 */
+	public static void logComparisons(Object x, Object y) {
+		logmt(COMPARISON_LOCK, "comparisons.txt", String.valueOf(x) + ":" + String.valueOf(y));
+	}
+	
+	public static void logmt(String file, Object o) {
+		logmt(COVERAGE_LOCK, file, String.valueOf(o));
+	}
+	
+	/**
+	 * Calls main logmt(), default to appendStack
+	 * @param lock
+	 * @param file
+	 * @param msg
+	 */
+	public static void logmt(Object lock, String file, String msg) {
+		logmt(lock, file, msg, true);
+	}
+	/**
+	 * 
+	 * @param file	where to write to - /data/data/<app package>/<file> on the emulator
+	 * @param objRepresentation - String to write to the file. Note a newline is always appended
+	 */
+	public static void logmt(Object lock, String file, String msg, boolean appendStack) {
 		if ( DEBUG && (AppContext != null) ) {
-			try {
-				if ( MethodTraceFOS == null ) {
-					MethodTraceFOS = AppContext.openFileOutput("mt.log",
-							Context.MODE_APPEND);
-				}
-				StringBuilder sb = new StringBuilder(String.valueOf(o));
-				sb.append("\n");
+			StringBuilder sb = new StringBuilder(msg);
+			sb.append("\n");
+			if (appendStack)
 				sb.append(getOurStackDump());
-				MethodTraceFOS.write(sb.toString().getBytes());
+			synchronized(lock) {
+				appendToFile(file, sb.toString());
 			}
-			catch (Exception e) {
-				Log.d("sequencer", "logmt() exception: " + e);
+		}
+		
+	}
+	
+	public static void appendToFile(String file, String msg) {
+		FileOutputStream fos = null;
+		try {
+			fos = AppContext.openFileOutput(file,
+					Context.MODE_APPEND);
+			//MethodTraceFOS.write(sb.toString().getBytes());
+			fos.write(msg.getBytes());
+		}
+		catch (Exception e) {
+			Log.d("sequencer", "logmt() exception: " + e);
+			e.printStackTrace();
+		}
+		finally {
+			try {
+				fos.close();
+			} catch (IOException e) {
+				Log.d("sequencer", "logmt() file close exception: " + e);
 				e.printStackTrace();
 			}
 		}
